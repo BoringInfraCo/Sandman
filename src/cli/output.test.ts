@@ -16,6 +16,7 @@ describe("CLI output contract", () => {
   it("okPayload is additive and parseable", () => {
     const payload = okPayload({ name: "demo", provider: "aws" });
     expect(payload).toEqual({
+      schema: "sandman.cli.v1",
       success: true,
       code: "OK",
       name: "demo",
@@ -42,7 +43,12 @@ describe("CLI output contract", () => {
     });
     expect(log).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(String(log.mock.calls[0][0]));
-    expect(parsed).toEqual({ success: true, code: "OK", name: "demo" });
+    expect(parsed).toEqual({
+      schema: "sandman.cli.v1",
+      success: true,
+      code: "OK",
+      name: "demo",
+    });
   });
 
   it("emitErr writes JSON then exits", () => {

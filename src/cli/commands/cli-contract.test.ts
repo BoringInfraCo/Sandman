@@ -116,7 +116,7 @@ describe("CLI commands", () => {
     const parsed = JSON.parse(String(log.mock.calls[0][0]));
     expect(parsed.success).toBe(true);
     const cf = parsed.providers.find((p: { id: string }) => p.id === "cloudflare");
-    expect(cf.maturity).toBe("experimental");
+    expect(cf.maturity).toBe("supported");
     const aws = parsed.providers.find((p: { id: string }) => p.id === "aws");
     expect(aws.maturity).toBe("supported");
   });

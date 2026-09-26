@@ -14,6 +14,9 @@ import {
 import { TTL_HINT, expiresAtFromTtl } from "../../utils/ttl.js";
 import { emitErr, emitOk, mapThrownError } from "../output.js";
 import { ENV_NAME_HINT, isValidEnvName } from "../env-name.js";
+import { getTemplate, templateServices } from "../../templates/index.js";
+import { buildProvenance } from "../../utils/provenance.js";
+import { enableServices } from "./enable.js";
 
 interface CreateParams {
   dryRun?: boolean;
@@ -28,6 +31,11 @@ export async function createEnvironment(
     region?: string;
     billingAccount?: string;
     ttl?: string;
+    template?: string;
+    goal?: string;
+    harness?: string;
+    actor?: string;
+    sessionId?: string;
   },
   store: StateStore,
   params: CreateParams,
@@ -94,6 +102,14 @@ export async function createEnvironment(
     }
   }
 
+  if (options.template && !getTemplate(options.template)) {
+    emitErr(params.json, {
+      code: "INVALID_INPUT",
+      error: `Unknown template "${options.template}".`,
+      next: ["sandman templates --json"],
+    });
+  }
+
   const warning = experimentalWarning(providerType);
   const requestedRegion = options.region || providerConfig.region;
   const region = requestedRegion || "default";
@@ -112,6 +128,7 @@ export async function createEnvironment(
       ...(ttlInfo ? { ttl: ttlInfo.ttl, expiresAt: ttlInfo.expiresAt } : {}),
       ...(params.strict ? { strict: true } : {}),
       ...(warning ? { warning } : {}),
+      ...(options.template ? { template: options.template } : {}),
     };
     emitOk(params.json, dryRunResult, () => {
       console.log(chalk.cyan("[DRY RUN] Would create:"));
@@ -174,8 +191,24 @@ export async function createEnvironment(
       env.ttl = ttlInfo.ttl;
       env.expiresAt = ttlInfo.expiresAt;
     }
+    if (options.template) {
+      env.template = options.template;
+    }
+    env.provenance = await buildProvenance({
+      harness: options.harness,
+      actor: options.actor,
+      sessionId: options.sessionId,
+      goal: options.goal,
+    });
 
     await store.saveEnvironment(env);
+
+    if (options.template && env.status === "active") {
+      const services = templateServices(options.template, providerType);
+      if (services.length) {
+        await enableServices(services, name, store, { json: params.json });
+      }
+    }
 
     const warnings: string[] = [];
     if (warning) warnings.push(warning);

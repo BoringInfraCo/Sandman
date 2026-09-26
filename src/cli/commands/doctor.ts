@@ -1,8 +1,12 @@
 import { promises as fs } from "fs";
 import chalk from "chalk";
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { StateStore } from "../../core/state-store.js";
 import { configureAdapter, getAdapter } from "../../providers/index.js";
 import { parseProvider } from "../../providers/catalog.js";
+import { detectHarnesses, parseHarness } from "../../utils/harness.js";
 import { emitOk, mapThrownError } from "../output.js";
 import { reapExpiredEnvironments } from "../reap.js";
 import { isExpired } from "../../utils/ttl.js";
@@ -10,10 +14,40 @@ import { isExpired } from "../../utils/ttl.js";
 interface DoctorOptions {
   json?: boolean;
   reap?: boolean;
+  harness?: string;
+}
+
+function packageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(
+      readFileSync(join(here, "../../../package.json"), "utf-8"),
+    ) as { version?: string };
+    return pkg.version ?? "0.3.0";
+  } catch {
+    return "0.3.0";
+  }
 }
 
 function presence(value: string | undefined): "set" | "missing" {
   return value ? "set" : "missing";
+}
+
+function readinessNextAction(report: {
+  initialized: boolean;
+  expiredCount: number;
+  harness?: string;
+}): string {
+  if (!report.initialized) {
+    return "sandman init aws --json";
+  }
+  if (report.expiredCount > 0) {
+    return "sandman doctor --reap --json";
+  }
+  if (report.harness) {
+    return `sandman connect-agent --harness ${report.harness}`;
+  }
+  return "sandman up --json";
 }
 
 export async function doctor(
@@ -21,6 +55,7 @@ export async function doctor(
   options: DoctorOptions = {},
 ): Promise<void> {
   const providerConfig = await store.getProvider();
+  const operator = await store.getOperator();
   const lockPath = store.getLockPath();
   let lockPresent = false;
   try {
@@ -69,7 +104,24 @@ export async function doctor(
     }
   }
 
+  const harnesses = detectHarnesses();
+  const harnessName = options.harness
+    ? parseHarness(options.harness)
+    : undefined;
+  const harnessReport = harnessName
+    ? harnesses.find((item) => item.harness === harnessName)
+    : undefined;
+
+  const readiness =
+    reportReadiness({
+      initialized: Boolean(providerConfig.provider),
+      identityError,
+      expiredCount: expired.length,
+      harnessInstalled: harnessReport?.installed ?? false,
+    });
+
   const report = {
+    version: packageVersion(),
     configPath: store.getConfigPath(),
     lockPath,
     lockPresent,
@@ -77,8 +129,17 @@ export async function doctor(
     provider: providerConfig.provider ?? null,
     region: providerConfig.region ?? null,
     billingAccount: providerConfig.billingAccount ?? null,
+    operator: operator ?? null,
     identity: identity ?? null,
     identityError: identityError ?? null,
+    harnesses,
+    harness: harnessReport ?? null,
+    readiness,
+    nextAction: readinessNextAction({
+      initialized: Boolean(providerConfig.provider),
+      expiredCount: expired.length,
+      harness: harnessName,
+    }),
     environments: {
       total: environments.length,
       expired,
@@ -100,6 +161,7 @@ export async function doctor(
 
   emitOk(options.json, report, () => {
     console.log(chalk.bold("\nSandman doctor\n"));
+    console.log(`  ${chalk.gray("Version:")} ${report.version}`);
     console.log(`  ${chalk.gray("Config:")} ${report.configPath}`);
     console.log(
       `  ${chalk.gray("Lock:")} ${lockPresent ? chalk.yellow("held") : "clear"} (${lockPath})`,
@@ -107,6 +169,9 @@ export async function doctor(
     console.log(
       `  ${chalk.gray("Init:")} ${report.initialized ? chalk.green(String(report.provider)) : chalk.red("not run")}`,
     );
+    if (operator) {
+      console.log(`  ${chalk.gray("Operator:")} ${operator.name}`);
+    }
     if (report.region) {
       console.log(`  ${chalk.gray("Region:")} ${report.region}`);
     }
@@ -121,6 +186,8 @@ export async function doctor(
         `  ${chalk.red("Identity error:")} ${identityError.code}: ${identityError.error}`,
       );
     }
+    console.log(`  ${chalk.gray("Readiness:")} ${readiness}`);
+    console.log(`  ${chalk.gray("Next:")} ${report.nextAction}`);
     console.log(
       `  ${chalk.gray("Environments:")} ${report.environments.total} (${expired.length} expired)`,
     );
@@ -146,4 +213,25 @@ export async function doctor(
       console.log(chalk.cyan('\n→ Run "sandman init aws" or "sandman init gcp"'));
     }
   });
+}
+
+function reportReadiness(input: {
+  initialized: boolean;
+  identityError?: { code: string; error: string };
+  expiredCount: number;
+  harnessInstalled: boolean;
+}): string {
+  if (!input.initialized) {
+    return "needs_init";
+  }
+  if (input.identityError?.code === "AUTH_REQUIRED") {
+    return "auth_required";
+  }
+  if (input.expiredCount > 0) {
+    return "expired_environments";
+  }
+  if (input.harnessInstalled) {
+    return "ready";
+  }
+  return "ready_no_harness";
 }

@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { stringifyEnvelope, wrapErr, wrapOk } from "../contract/envelope.js";
 
 export type ResultCode =
   | "OK"
@@ -17,23 +18,29 @@ export type ResultCode =
   | "PARTIAL"
   | "EXPIRED"
   | "INVALID_TTL"
+  | "INVALID_INPUT"
+  | "UNSUPPORTED"
   | "INTERNAL";
 
 export interface OkPayload extends Record<string, unknown> {
   success: true;
   code: "OK";
+  schema: string;
+  command?: string;
 }
 
 export interface ErrPayload extends Record<string, unknown> {
   success: false;
   code: ResultCode;
   error: string;
+  schema: string;
+  command?: string;
   hint?: string;
   next?: string[];
 }
 
 export function okPayload(data: Record<string, unknown> = {}): OkPayload {
-  return { success: true, code: "OK", ...data };
+  return wrapOk(data) as OkPayload;
 }
 
 export function errPayload(
@@ -41,7 +48,7 @@ export function errPayload(
   error: string,
   extra: Record<string, unknown> = {},
 ): ErrPayload {
-  return { success: false, code, error, ...extra };
+  return wrapErr(code, error, extra) as ErrPayload;
 }
 
 export function emitOk(
@@ -50,7 +57,7 @@ export function emitOk(
   human: () => void,
 ): void {
   if (json) {
-    console.log(JSON.stringify(okPayload(data)));
+    console.log(stringifyEnvelope(wrapOk(data)).trimEnd());
     return;
   }
   human();
@@ -72,7 +79,7 @@ export function emitErr(
     const extra: Record<string, unknown> = { ...rest };
     if (hint) extra.hint = hint;
     if (next) extra.next = next;
-    console.log(JSON.stringify(errPayload(code, error, extra)));
+    console.log(stringifyEnvelope(wrapErr(code, error, extra)).trimEnd());
   } else if (human) {
     human();
   } else {
@@ -111,11 +118,22 @@ export function mapThrownError(error: unknown): {
 
 export async function runCommand(
   json: boolean | undefined,
+  command: string,
   fn: () => Promise<void>,
 ): Promise<void> {
+  const { setJsonCommand, clearJsonCommand } = await import(
+    "../contract/envelope.js"
+  );
+  if (json) {
+    setJsonCommand(command);
+  }
   try {
     await fn();
   } catch (error) {
     emitErr(json, mapThrownError(error));
+  } finally {
+    if (json) {
+      clearJsonCommand();
+    }
   }
 }

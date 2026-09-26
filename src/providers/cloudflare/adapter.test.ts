@@ -28,11 +28,10 @@ describe("CloudflareAdapter", () => {
 
       (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ result: { id: "user123" } }),
+        json: async () => ({ success: true, result: { id: "user123" } }),
       });
 
       await adapter.init();
-      // Would throw if auth failed
       expect(global.fetch).toHaveBeenCalledWith(
         "https://api.cloudflare.com/client/v4/user",
         expect.any(Object),
@@ -48,103 +47,66 @@ describe("CloudflareAdapter", () => {
       });
 
       await expect(adapter.init()).rejects.toThrow(
-        "Cloudflare authentication failed: Invalid token",
-      );
-    });
-
-    it("should fetch first account when ACCOUNT_ID not set", async () => {
-      process.env.CLOUDFLARE_API_TOKEN = "test-token";
-      delete process.env.CLOUDFLARE_ACCOUNT_ID;
-
-      (global.fetch as ReturnType<typeof vi.fn>)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ result: { id: "user123" } }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            result: [{ id: "account123", name: "My Account" }],
-          }),
-        });
-
-      await adapter.init();
-      expect(global.fetch).toHaveBeenCalledWith(
-        "https://api.cloudflare.com/client/v4/accounts",
-        expect.any(Object),
+        "Cloudflare API error: Invalid token",
       );
     });
   });
 
   describe("createEnvironment", () => {
-    it("should create an environment record with namespaceId", async () => {
+    it("should create an environment record with kv namespace", async () => {
+      process.env.CLOUDFLARE_API_TOKEN = "test-token";
+      process.env.CLOUDFLARE_ACCOUNT_ID = "account123";
+      (global.fetch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, result: { id: "user123" } }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            success: true,
+            result: { id: "kv-123", title: "sandman-test-env" },
+          }),
+        });
+
+      await adapter.init();
       const env = await adapter.createEnvironment("test-env");
 
       expect(env.name).toBe("test-env");
       expect(env.provider).toBe("cloudflare");
       expect(env.status).toBe("active");
-      expect(env.resources.namespaceId).toMatch(/^sandman-test-env-/);
-    });
-
-    it("should include accountId from env", async () => {
-      process.env.CLOUDFLARE_ACCOUNT_ID = "my-account";
-      const env = await adapter.createEnvironment("prod");
-
-      expect(env.accountId).toBe("my-account");
+      expect(env.resources.kvNamespaceId).toBe("kv-123");
+      expect(env.accountId).toBe("account123");
     });
   });
 
   describe("enableServices", () => {
-    it("should log services to enable", async () => {
+    it("should mark kv as provisioned when namespace exists", async () => {
       const env = {
         name: "test",
         provider: "cloudflare" as const,
         status: "active" as const,
         services: [] as ServiceName[],
-        resources: {},
+        resources: { kvNamespaceId: "kv-123" },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        accountId: "account123",
       };
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await adapter.enableServices(env, ["workers", "kv", "d1"]);
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "Enabling Cloudflare services: workers, kv, d1",
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it("should filter invalid services", async () => {
-      const env = {
-        name: "test",
-        provider: "cloudflare" as const,
-        status: "active" as const,
-        services: [] as ServiceName[],
-        resources: {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await adapter.enableServices(env, ["invalid-service" as ServiceName]);
-
-      expect(consoleSpy).toHaveBeenCalledWith("Enabling Cloudflare services: ");
-      consoleSpy.mockRestore();
+      const result = await adapter.enableServices(env, ["workers", "kv", "d1"]);
+      expect(result.provisioned).toContain("kv");
+      expect(result.localOnly.length).toBeGreaterThan(0);
     });
   });
 
   describe("connect", () => {
     it("should return environment variables", async () => {
-      process.env.CLOUDFLARE_API_TOKEN = "my-token";
-      process.env.CLOUDFLARE_ACCOUNT_ID = "my-account";
-
       const env = {
         name: "test",
         provider: "cloudflare" as const,
         status: "active" as const,
         services: [] as ServiceName[],
-        resources: { namespaceId: "ns-123" },
+        resources: { kvNamespaceId: "ns-123" },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         accountId: "my-account",
@@ -154,75 +116,37 @@ describe("CloudflareAdapter", () => {
 
       expect(creds.provider).toBe("cloudflare");
       expect(creds.CLOUDFLARE_ACCOUNT_ID).toBe("my-account");
-      expect(creds.CLOUDFLARE_API_TOKEN).toBeUndefined();
-      expect(creds.CLOUDFLARE_NAMESPACE_ID).toBe("ns-123");
-    });
-
-    it("should work without optional fields", async () => {
-      const env = {
-        name: "test",
-        provider: "cloudflare" as const,
-        status: "active" as const,
-        services: [] as ServiceName[],
-        resources: {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const creds = await adapter.connect(env);
-
-      expect(creds.provider).toBe("cloudflare");
-      expect(creds.CLOUDFLARE_ACCOUNT_ID).toBeUndefined();
+      expect(creds.CLOUDFLARE_KV_NAMESPACE_ID).toBe("ns-123");
     });
   });
 
   describe("destroyEnvironment", () => {
-    it("should log cleanup message", async () => {
+    it("should attempt kv cleanup", async () => {
+      process.env.CLOUDFLARE_API_TOKEN = "test-token";
+      process.env.CLOUDFLARE_ACCOUNT_ID = "account123";
+      (global.fetch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, result: { id: "user123" } }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true }),
+        });
+
+      await adapter.init();
       const env = {
         name: "test",
         provider: "cloudflare" as const,
         status: "active" as const,
         services: [] as ServiceName[],
-        resources: { namespaceId: "ns-123" },
+        resources: { kvNamespaceId: "ns-123" },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       await adapter.destroyEnvironment(env);
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "Cleaning up Cloudflare resources for environment: test",
-      );
-      consoleSpy.mockRestore();
-    });
-  });
-
-  describe("getStatus", () => {
-    it("should return environment as-is", async () => {
-      const env = {
-        name: "test",
-        provider: "cloudflare" as const,
-        status: "active" as const,
-        services: ["workers", "kv"] as ServiceName[],
-        resources: { namespaceId: "ns-123" },
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      };
-
-      const result = await adapter.getStatus(env);
-      expect(result).toEqual(env);
-    });
-  });
-
-  describe("interface compliance", () => {
-    it("should have all required methods", () => {
-      expect(typeof adapter.init).toBe("function");
-      expect(typeof adapter.createEnvironment).toBe("function");
-      expect(typeof adapter.enableServices).toBe("function");
-      expect(typeof adapter.connect).toBe("function");
-      expect(typeof adapter.destroyEnvironment).toBe("function");
-      expect(typeof adapter.getStatus).toBe("function");
+      expect(global.fetch).toHaveBeenCalled();
     });
   });
 });

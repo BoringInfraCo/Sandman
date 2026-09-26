@@ -7,6 +7,38 @@ import {
 import { localOnlyEnable } from "../enable-result.js";
 import { logger } from "../../utils/logger.js";
 
+function apiToken(): string {
+  const token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) {
+    throw new Error("CLOUDFLARE_API_TOKEN environment variable is required.");
+  }
+  return token;
+}
+
+async function cfFetch<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${apiToken()}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+  const body = (await response.json()) as {
+    success?: boolean;
+    result?: T;
+    errors?: { message: string }[];
+  };
+  if (!response.ok || body.success === false) {
+    const msg = body.errors?.[0]?.message || response.statusText;
+    throw new Error(`Cloudflare API error: ${msg}`);
+  }
+  return body.result as T;
+}
+
 export class CloudflareAdapter implements ProviderAdapter {
   private accountId: string | null = null;
   private region: string | undefined;
@@ -16,66 +48,48 @@ export class CloudflareAdapter implements ProviderAdapter {
   }
 
   async init(): Promise<void> {
-    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
     const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-
-    if (!apiToken) {
-      throw new Error(
-        "CLOUDFLARE_API_TOKEN environment variable is required. " +
-          "Create a token at https://dash.cloudflare.com/profile/api-tokens",
-      );
-    }
-
-    // Verify token by fetching account info
-    const response = await fetch("https://api.cloudflare.com/client/v4/user", {
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      const body = (await response.json()) as { errors?: { message: string }[] };
-      const msg = body.errors?.[0]?.message || response.statusText;
-      throw new Error(`Cloudflare authentication failed: ${msg}`);
-    }
+    await cfFetch<{ id: string; email?: string }>("/user");
 
     if (accountId) {
       this.accountId = accountId;
     } else {
-      // Fetch first account associated with the token
-      const accountsRes = await fetch(
-        "https://api.cloudflare.com/client/v4/accounts",
-        {
-          headers: {
-            Authorization: `Bearer ${apiToken}`,
-            "Content-Type": "application/json",
-          },
-        },
+      const accounts = await cfFetch<{ id: string }[]>("/accounts");
+      this.accountId = accounts[0]?.id || null;
+    }
+    if (!this.accountId) {
+      throw new Error(
+        "Could not resolve Cloudflare account id. Set CLOUDFLARE_ACCOUNT_ID.",
       );
-      if (accountsRes.ok) {
-        const data = (await accountsRes.json()) as {
-          result?: { id: string }[];
-        };
-        this.accountId = data.result?.[0]?.id || null;
-      }
     }
   }
 
   async createEnvironment(name: string): Promise<EnvironmentRecord> {
     const now = new Date().toISOString();
-    const namespaceId = `sandman-${name}-${Date.now()}`;
+    const resources: Record<string, unknown> = {
+      createdBy: "sandman",
+    };
+
+    const kv = await cfFetch<{ id: string; title: string }>(
+      `/accounts/${this.accountId}/storage/kv/namespaces`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: `sandman-${name}`,
+        }),
+      },
+    );
+    resources.kvNamespaceId = kv.id;
+    resources.kvNamespaceTitle = kv.title;
 
     return {
       name,
       provider: "cloudflare",
-      accountId: process.env.CLOUDFLARE_ACCOUNT_ID || undefined,
+      accountId: this.accountId || undefined,
       region: this.region,
       status: "active",
-      services: [],
-      resources: {
-        namespaceId,
-      },
+      services: ["kv"],
+      resources,
       createdAt: now,
       updatedAt: now,
     };
@@ -85,15 +99,56 @@ export class CloudflareAdapter implements ProviderAdapter {
     env: EnvironmentRecord,
     services: ServiceName[],
   ): Promise<EnableResult> {
-    const enabledServices = services
-      .map((s) => CLOUDFLARE_SERVICES[s])
-      .filter(Boolean);
-    logger.info(`Enabling Cloudflare services: ${enabledServices.join(", ")}`);
-    return localOnlyEnable(
-      "cloudflare",
-      services.filter((s) => CLOUDFLARE_SERVICES[s]),
-      "cloudflare is experimental: enable records services locally and does not provision cloud resources.",
-    );
+    const valid = services.filter((s) => CLOUDFLARE_SERVICES[s]);
+    const provisioned: ServiceName[] = [];
+    const localOnly: ServiceName[] = [];
+    const warnings: string[] = [];
+
+    for (const service of valid) {
+      if (service === "kv" && env.resources.kvNamespaceId) {
+        provisioned.push(service);
+        continue;
+      }
+      if (service === "r2" && this.accountId) {
+        try {
+          const bucket = await cfFetch<{ name: string }>(
+            `/accounts/${this.accountId}/r2/buckets`,
+            {
+              method: "POST",
+              body: JSON.stringify({ name: `sandman-${env.name}` }),
+            },
+          );
+          env.resources.r2Bucket = bucket.name;
+          provisioned.push(service);
+        } catch (error: unknown) {
+          warnings.push(
+            `r2 provisioning failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          localOnly.push(service);
+        }
+        continue;
+      }
+      localOnly.push(service);
+      warnings.push(
+        `${service} is not fully provisioned yet; recorded locally.`,
+      );
+    }
+
+    env.services = [...new Set([...env.services, ...provisioned, ...localOnly])];
+    env.updatedAt = new Date().toISOString();
+
+    return {
+      mode:
+        provisioned.length && localOnly.length
+          ? "mixed"
+          : localOnly.length
+            ? "local-only"
+            : "cloud",
+      recorded: valid,
+      provisioned,
+      localOnly,
+      warnings: warnings.length ? warnings : undefined,
+    };
   }
 
   async whoami(): Promise<Record<string, string | null | undefined>> {
@@ -112,8 +167,11 @@ export class CloudflareAdapter implements ProviderAdapter {
     if (env.accountId) {
       result.CLOUDFLARE_ACCOUNT_ID = env.accountId;
     }
-    if (env.resources.namespaceId) {
-      result.CLOUDFLARE_NAMESPACE_ID = env.resources.namespaceId as string;
+    if (env.resources.kvNamespaceId) {
+      result.CLOUDFLARE_KV_NAMESPACE_ID = String(env.resources.kvNamespaceId);
+    }
+    if (env.resources.r2Bucket) {
+      result.CLOUDFLARE_R2_BUCKET = String(env.resources.r2Bucket);
     }
 
     return result;
@@ -123,7 +181,21 @@ export class CloudflareAdapter implements ProviderAdapter {
     logger.info(
       `Cleaning up Cloudflare resources for environment: ${env.name}`,
     );
-    // Future: delete KV namespaces, R2 buckets, D1 databases via API
+    if (!this.accountId) {
+      return;
+    }
+    if (env.resources.kvNamespaceId) {
+      await cfFetch(
+        `/accounts/${this.accountId}/storage/kv/namespaces/${env.resources.kvNamespaceId}`,
+        { method: "DELETE" },
+      ).catch(() => undefined);
+    }
+    if (env.resources.r2Bucket) {
+      await cfFetch(
+        `/accounts/${this.accountId}/r2/buckets/${env.resources.r2Bucket}`,
+        { method: "DELETE" },
+      ).catch(() => undefined);
+    }
   }
 
   async getStatus(env: EnvironmentRecord): Promise<EnvironmentRecord> {

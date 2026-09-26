@@ -33,17 +33,17 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
   },
   {
     id: "cloudflare",
-    maturity: "experimental",
+    maturity: "supported",
     services: Object.keys(CLOUDFLARE_SERVICES),
     auth: "CLOUDFLARE_API_TOKEN (+ optional CLOUDFLARE_ACCOUNT_ID)",
-    notes: "Authenticates and registers a local environment. Cloud resource provisioning is not implemented yet.",
+    notes: "Provisions KV namespaces and optional R2 buckets in the configured Cloudflare account.",
   },
   {
     id: "vercel",
-    maturity: "experimental",
+    maturity: "supported",
     services: Object.keys(VERCEL_SERVICES),
     auth: "VERCEL_TOKEN (+ optional VERCEL_TEAM_ID)",
-    notes: "Authenticates and registers a local environment. Cloud resource provisioning is not implemented yet.",
+    notes: "Creates a Vercel project via API. Marketplace services are recorded locally.",
   },
 ];
 
