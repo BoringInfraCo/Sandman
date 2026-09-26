@@ -39,8 +39,19 @@ sandman status <name> [--json]
 sandman connect <name> [--json]
 sandman destroy <name> [-y] [--json]
 sandman providers [--json]
-sandman doctor [--reap] [--json]
+sandman doctor [--reap] [--harness <name>] [--json]
 sandman whoami [--json]
+sandman up [--provider <provider>] [--name <name>] [--template <id>] [--json]
+sandman handoff <name> --to <cursor|codex|opencode> [--json]
+sandman connect-agent --harness <cursor|codex|opencode> [--json]
+sandman templates [--json]
+sandman mcp serve
+sandman view [--port 9420]
+sandman link <name> --combie [--json]
+sandman verify <name> [--json]
+sandman checkpoint <name> [message] [--json]
+sandman rollback <name> --last [--json]
+sandman seed --reset [--json]
 ```
 
 ## Workflow

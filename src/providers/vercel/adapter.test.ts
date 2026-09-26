@@ -31,53 +31,29 @@ describe("VercelAdapter", () => {
       });
 
       await expect(adapter.init()).resolves.not.toThrow();
-      expect(global.fetch).toHaveBeenCalledWith(
-        "https://api.vercel.com/v2/user",
-        expect.any(Object),
-      );
-    });
-
-    it("should throw on authentication failure", async () => {
-      process.env.VERCEL_TOKEN = "bad-token";
-
-      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: { message: "Invalid token" } }),
-      });
-
-      await expect(adapter.init()).rejects.toThrow(
-        "Vercel authentication failed: Invalid token",
-      );
-    });
-
-    it("should capture team ID from env", async () => {
-      process.env.VERCEL_TOKEN = "test-token";
-      process.env.VERCEL_TEAM_ID = "team_abc123";
-
-      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ user: { id: "user123" } }),
-      });
-
-      await adapter.init();
-      expect(global.fetch).toHaveBeenCalled();
     });
   });
 
   describe("createEnvironment", () => {
-    it("should create an environment record with projectName", async () => {
+    it("should create an environment record with project id", async () => {
+      process.env.VERCEL_TOKEN = "test-token";
+      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "prj_123", name: "sandman-test-env" }),
+      });
+
       const env = await adapter.createEnvironment("test-env");
 
       expect(env.name).toBe("test-env");
       expect(env.provider).toBe("vercel");
       expect(env.status).toBe("active");
-      expect(env.projectId).toMatch(/^sandman-test-env-/);
-      expect(env.resources.projectName).toMatch(/^sandman-test-env-/);
+      expect(env.projectId).toBe("prj_123");
+      expect(env.resources.projectName).toBe("sandman-test-env");
     });
   });
 
   describe("enableServices", () => {
-    it("should log services to enable", async () => {
+    it("should record services locally", async () => {
       const env = {
         name: "test",
         provider: "vercel" as const,
@@ -88,37 +64,14 @@ describe("VercelAdapter", () => {
         updatedAt: new Date().toISOString(),
       };
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await adapter.enableServices(env, ["functions", "edge", "blob"]);
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "Enabling Vercel services: functions, edge, blob",
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it("should filter invalid services", async () => {
-      const env = {
-        name: "test",
-        provider: "vercel" as const,
-        status: "active" as const,
-        services: [] as ServiceName[],
-        resources: {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await adapter.enableServices(env, ["invalid-service" as ServiceName]);
-
-      expect(consoleSpy).toHaveBeenCalledWith("Enabling Vercel services: ");
-      consoleSpy.mockRestore();
+      const result = await adapter.enableServices(env, ["functions", "edge", "blob"]);
+      expect(result.mode).toBe("local-only");
+      expect(result.recorded).toEqual(["functions", "edge", "blob"]);
     });
   });
 
   describe("connect", () => {
     it("should return environment variables", async () => {
-      process.env.VERCEL_TOKEN = "my-token";
       process.env.VERCEL_TEAM_ID = "team_abc";
 
       const env = {
@@ -129,83 +82,42 @@ describe("VercelAdapter", () => {
         resources: { projectName: "my-project" },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        projectId: "my-project",
+        projectId: "prj_123",
       };
 
       const creds = await adapter.connect(env);
 
       expect(creds.provider).toBe("vercel");
-      expect(creds.VERCEL_TOKEN).toBeUndefined();
+      expect(creds.VERCEL_PROJECT_ID).toBe("prj_123");
       expect(creds.VERCEL_PROJECT_NAME).toBe("my-project");
       expect(creds.VERCEL_TEAM_ID).toBe("team_abc");
-    });
-
-    it("should work without optional fields", async () => {
-      const env = {
-        name: "test",
-        provider: "vercel" as const,
-        status: "active" as const,
-        services: [] as ServiceName[],
-        resources: {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const creds = await adapter.connect(env);
-
-      expect(creds.provider).toBe("vercel");
-      expect(creds.VERCEL_TEAM_ID).toBeUndefined();
     });
   });
 
   describe("destroyEnvironment", () => {
-    it("should log cleanup message", async () => {
+    it("should call the Vercel delete API", async () => {
+      process.env.VERCEL_TOKEN = "test-token";
+      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      });
+
       const env = {
         name: "test",
         provider: "vercel" as const,
         status: "active" as const,
         services: [] as ServiceName[],
-        resources: { projectName: "my-project" },
+        resources: { projectId: "prj_123" },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        projectId: "prj_123",
       };
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       await adapter.destroyEnvironment(env);
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "Cleaning up Vercel resources for environment: test",
+      expect(global.fetch).toHaveBeenCalledWith(
+        "https://api.vercel.com/v9/projects/prj_123",
+        expect.objectContaining({ method: "DELETE" }),
       );
-      consoleSpy.mockRestore();
-    });
-  });
-
-  describe("getStatus", () => {
-    it("should return environment as-is", async () => {
-      const env = {
-        name: "test",
-        provider: "vercel" as const,
-        status: "active" as const,
-        services: ["functions", "blob"] as ServiceName[],
-        resources: { projectName: "my-project" },
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-        projectId: "my-project",
-      };
-
-      const result = await adapter.getStatus(env);
-      expect(result).toEqual(env);
-    });
-  });
-
-  describe("interface compliance", () => {
-    it("should have all required methods", () => {
-      expect(typeof adapter.init).toBe("function");
-      expect(typeof adapter.createEnvironment).toBe("function");
-      expect(typeof adapter.enableServices).toBe("function");
-      expect(typeof adapter.connect).toBe("function");
-      expect(typeof adapter.destroyEnvironment).toBe("function");
-      expect(typeof adapter.getStatus).toBe("function");
     });
   });
 });

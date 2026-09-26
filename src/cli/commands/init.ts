@@ -3,11 +3,15 @@ import ora from 'ora';
 import { StateStore } from '../../core/state-store.js';
 import { configureAdapter, getAdapter } from '../../providers/index.js';
 import { experimentalWarning, parseProvider } from '../../providers/catalog.js';
+import { detectAwsProfile, detectEnvAuth, detectGcloud } from '../../utils/auth-detect.js';
 import { emitErr, emitOk, mapThrownError } from '../output.js';
 
 interface InitOptions {
   json?: boolean;
   billingAccount?: string;
+  useAwsProfile?: string;
+  useGcloud?: boolean;
+  useEnv?: boolean;
 }
 
 export async function initProvider(
@@ -32,6 +36,39 @@ export async function initProvider(
   const spinner = options.json ? null : ora(`Initializing ${providerType}...`).start();
 
   try {
+    if (providerType === 'aws' && options.useAwsProfile) {
+      const detected = await detectAwsProfile(options.useAwsProfile);
+      if (!detected.ok) {
+        throw new Error(
+          `AWS profile "${options.useAwsProfile}" is not usable: ${detected.error}`,
+        );
+      }
+      process.env.AWS_PROFILE = options.useAwsProfile;
+    }
+
+    if (providerType === 'gcp' && options.useGcloud) {
+      const detected = await detectGcloud();
+      if (!detected.ok) {
+        throw new Error(`gcloud auth is not ready: ${detected.error}`);
+      }
+    }
+
+    if (
+      (providerType === 'cloudflare' || providerType === 'vercel') &&
+      options.useEnv
+    ) {
+      const keys =
+        providerType === 'cloudflare'
+          ? ['CLOUDFLARE_API_TOKEN']
+          : ['VERCEL_TOKEN'];
+      const detected = detectEnvAuth(keys);
+      if (!detected.ok) {
+        throw new Error(
+          `Missing required env vars: ${detected.missing.join(', ')}`,
+        );
+      }
+    }
+
     const adapter = getAdapter(providerType);
     await adapter.init();
     configureAdapter(adapter, {

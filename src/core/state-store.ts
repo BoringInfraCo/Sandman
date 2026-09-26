@@ -5,6 +5,7 @@ import {
   Config,
   ConfigSchema,
   EnvironmentRecord,
+  Operator,
   ProviderType,
 } from "../types/index.js";
 
@@ -115,6 +116,26 @@ export class StateStore {
       region: config.defaultRegion,
       billingAccount: config.defaultBillingAccount,
     };
+  }
+
+  async getOperator(): Promise<Operator | undefined> {
+    const config = await this.loadUnlocked();
+    return config.operator;
+  }
+
+  async setOperator(name: string): Promise<void> {
+    await this.withLock(async () => {
+      const config = await this.loadUnlocked();
+      config.operator = {
+        name,
+        recordedAt: new Date().toISOString(),
+      };
+      await this.saveUnlocked(config);
+    });
+  }
+
+  async replaceConfig(config: Config): Promise<void> {
+    await this.save(config);
   }
 
   private async loadUnlocked(): Promise<Config> {

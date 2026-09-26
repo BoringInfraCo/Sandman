@@ -118,5 +118,23 @@
     "query": "Add Terraform support to provision infrastructure as code",
     "should_trigger": false,
     "notes": "IaC tooling request — not Sandman CLI orchestration"
+  },
+  {
+    "id": "trigger-11",
+    "query": "Hand off my sandman demo environment to another Cursor agent",
+    "should_trigger": true,
+    "notes": "Handoff workflow for cross-harness continuation"
+  },
+  {
+    "id": "trigger-12",
+    "query": "Start the Sandman MCP server so my agent can list environments",
+    "should_trigger": true,
+    "notes": "MCP tooling for agent-native Sandman access"
+  },
+  {
+    "id": "trigger-13",
+    "query": "Create a web-app template sandbox on GCP with Sandman",
+    "should_trigger": true,
+    "notes": "Template-based environment creation"
   }
 ]

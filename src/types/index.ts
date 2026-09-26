@@ -42,6 +42,16 @@ export const ServiceName = z.enum([
 
 export type ServiceName = z.infer<typeof ServiceName>;
 
+export const EnvironmentProvenanceSchema = z.object({
+  harness: z.string().optional(),
+  actor: z.string().optional(),
+  sessionId: z.string().optional(),
+  goal: z.string().optional(),
+  recordedAt: z.string().datetime().optional(),
+});
+
+export type EnvironmentProvenance = z.infer<typeof EnvironmentProvenanceSchema>;
+
 export const EnvironmentRecordSchema = z.object({
   name: z.string().min(1),
   provider: ProviderType,
@@ -57,15 +67,26 @@ export const EnvironmentRecordSchema = z.object({
   expiresAt: z.string().datetime().optional(),
   ttl: z.string().optional(),
   error: z.string().optional(),
+  provenance: EnvironmentProvenanceSchema.optional(),
+  template: z.string().optional(),
+  combieLinked: z.boolean().optional(),
 });
 
 export type EnvironmentRecord = z.infer<typeof EnvironmentRecordSchema>;
+
+export const OperatorSchema = z.object({
+  name: z.string(),
+  recordedAt: z.string().datetime(),
+});
+
+export type Operator = z.infer<typeof OperatorSchema>;
 
 export const ConfigSchema = z.object({
   version: z.string().default("1.0.0"),
   provider: ProviderType.optional(),
   defaultRegion: z.string().optional(),
   defaultBillingAccount: z.string().optional(),
+  operator: OperatorSchema.optional(),
   environments: z.record(z.string(), EnvironmentRecordSchema).default({}),
 });
 

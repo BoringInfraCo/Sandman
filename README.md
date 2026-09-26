@@ -50,7 +50,15 @@ For AWS, enable services with `sandman enable ec2 s3 lambda`.
 | `sandman connect <name>` | Output environment credentials |
 | `sandman destroy <name>` | Delete the environment and all resources |
 | `sandman providers` | Show the live provider capability matrix |
-| `sandman doctor` | Check init state, auth, and reap expired environments (`--reap`) |
+| `sandman doctor` | Check init state, auth, and reap expired environments (`--reap`, `--harness`) |
+| `sandman up` | Guided first environment: init, create, enable, connect |
+| `sandman handoff <name> --to <harness>` | Write a continuation package for another agent |
+| `sandman templates` | List built-in environment templates |
+| `sandman mcp serve` | Start the Sandman MCP server on stdio |
+| `sandman view` | Read-only loopback environment viewer |
+| `sandman link <name> --combie` | Register resources with Combie |
+| `sandman verify <name>` | Evaluate basic environment health claims |
+| `sandman seed --reset` | Load deterministic local state for evals |
 
 ---
 
